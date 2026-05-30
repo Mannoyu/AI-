@@ -1,26 +1,217 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/* ===== Design System: Matrix Green + Soft Terminal ===== */
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  /* Brand Colors — Matrix Green */
+  --color-primary: #00FF41;
+  --color-primary-light: #39FF6B;
+  --color-primary-dark: #00CC33;
+  --color-secondary: #0A4D1A;
+  --color-cta: #00FF41;
+  --color-cta-hover: #00CC33;
+
+  /* Background & Surface */
+  --color-bg: #0D1117;
+  --color-surface: #161B22;
+  --color-surface-alt: #1C2430;
+  --color-surface-raised: #21262D;
+
+  /* Text */
+  --color-text: #E6EDF3;
+  --color-text-muted: #8B949E;
+  --color-text-light: #6E7681;
+
+  /* Semantic */
+  --color-success: #00FF41;
+  --color-error: #FF3355;
+  --color-warning: #FFB800;
+  --color-gold: #FFD700;
+
+  /* Fonts */
+  --font-heading: "JetBrains Mono", monospace;
+  --font-body: "JetBrains Mono", "Fira Code", monospace;
+
+  /* Shadows — subtle green glow */
+  --shadow-terminal: 0 0 1px rgba(0, 255, 65, 0.2),
+    0 0 6px rgba(0, 255, 65, 0.06);
+  --shadow-terminal-sm: 0 0 1px rgba(0, 255, 65, 0.15);
+  --shadow-terminal-hover: 0 0 2px rgba(0, 255, 65, 0.35),
+    0 0 10px rgba(0, 255, 65, 0.12);
+  --shadow-terminal-glow: 0 0 2px rgba(0, 255, 65, 0.3),
+    0 0 12px rgba(0, 255, 65, 0.1), 0 0 25px rgba(0, 255, 65, 0.04);
+
+  /* Border radius */
+  --radius-terminal: 3px;
+  --radius-terminal-sm: 1px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ===== Base Styles ===== */
+
+body {
+  background: #0A0E14;
+  color: var(--color-text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Subtle page-wide grid — flows naturally across the whole window */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(0, 255, 65, 0.015) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 65, 0.015) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: radial-gradient(ellipse 60% 60% at 50% 30%, black 25%, transparent 75%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 60% at 50% 30%, black 25%, transparent 75%);
+}
+
+/* ===== Terminal Utility Classes ===== */
+
+@utility terminal-card {
+  background: var(--color-surface);
+  border: 1px solid rgba(0, 255, 65, 0.1);
+  border-radius: var(--radius-terminal);
+  box-shadow: var(--shadow-terminal);
+  transition: border-color 200ms ease-out, box-shadow 200ms ease-out;
+}
+
+@utility terminal-card-hover {
+  cursor: pointer;
+  &:hover {
+    border-color: rgba(0, 255, 65, 0.3);
+    box-shadow: var(--shadow-terminal-hover);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@utility terminal-inset {
+  background: var(--color-surface-alt);
+  border: 1px solid rgba(0, 255, 65, 0.06);
+  border-radius: var(--radius-terminal);
+}
+
+@utility terminal-btn {
+  border: 1px solid rgba(0, 255, 65, 0.2);
+  border-radius: var(--radius-terminal);
+  font-weight: 500;
+  transition: all 200ms ease-out;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+  &:hover {
+    border-color: rgba(0, 255, 65, 0.45);
+    box-shadow: var(--shadow-terminal-hover);
+  }
+  &:active {
+    background: rgba(0, 255, 65, 0.08);
+  }
+  &:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+}
+
+@utility terminal-btn-primary {
+  background: rgba(0, 255, 65, 0.08);
+  border-color: rgba(0, 255, 65, 0.25);
+  &:hover {
+    background: rgba(0, 255, 65, 0.14);
+  }
+}
+
+/* Green text glow */
+@utility text-glow {
+  text-shadow: 0 0 8px rgba(0, 255, 65, 0.4), 0 0 2px rgba(0, 255, 65, 0.7);
+}
+
+@utility text-glow-sm {
+  text-shadow: 0 0 4px rgba(0, 255, 65, 0.25);
+}
+
+/* Cursor blink */
+@utility cursor-blink {
+  &::after {
+    content: "▋";
+    animation: blink 1s step-end infinite;
+    color: var(--color-primary);
+  }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Subtle scanline */
+@utility scanline {
+  position: relative;
+  overflow: hidden;
+  &::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(0, 255, 65, 0.012) 3px,
+      rgba(0, 255, 65, 0.012) 4px
+    );
+  }
+}
+
+/* Soft page frame — gentle border, barely there */
+@utility page-frame {
+  border: 1px solid rgba(0, 255, 65, 0.06);
+  border-radius: 8px;
+  box-shadow:
+    inset 0 0 80px rgba(0, 0, 0, 0.12),
+    0 0 1px rgba(0, 255, 65, 0.04);
+  overflow: hidden;
+}
+
+/* ===== Scrollbar ===== */
+
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 255, 65, 0.12);
+  border-radius: 0;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 255, 65, 0.25);
+}
+
+/* ===== Focus ===== */
+
+*:focus-visible {
+  outline: 1px solid var(--color-primary);
+  outline-offset: 1px;
+  box-shadow: 0 0 5px rgba(0, 255, 65, 0.3);
+}
+
+/* ===== Selection ===== */
+
+::selection {
+  background: rgba(0, 255, 65, 0.18);
+  color: var(--color-primary);
+}
+
+/* ===== Reduced motion ===== */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,117 +1,99 @@
-# English Reading Assistant — Design Spec
+# AI 英语朗读助手 — 项目总览
 
-> 日期: 2026-05-30
-> 状态: Draft
+> 最后更新: 2026-05-30
+> 状态: 已完成
 
 ## 概述
 
-一个 Web 英语朗读助手。用户拍照上传英文文本 → OCR 提取全文 → 点击任意单词 → AI 生成一篇围绕该单词的多语义文章 → 用户自由跟读练习 → 逐词发音反馈（绿/红高亮）。
+一个基于 Next.js 16 App Router 的 Web 英语学习工具。核心流程：
 
----
+**拍照/粘贴英文文本 → OCR 提取全文 → 点击任意单词 → AI 生成多语义文章 → 录音跟读 → 逐词发音反馈（绿/红） + 评分 → 自动保存学习记录**
 
-## 技术决策
-
-| 决策项 | 选择 | 理由 |
-|--------|------|------|
-| AI 服务策略 | 成本优先 | 国产 LLM + 浏览器原生 Web Speech API |
-| 朗读交互 | 自由朗读 | 不限顺序，用户任意选择句子跟读 |
-| OCR 场景 | 拍照提取全文 + 点击取词 | 对应课本/阅读材料学习场景 |
-| 难度获取 | 首次自评 | 用户选择初级/中级/高级 |
-| 发音反馈 | 逐词高亮 | 绿=准确，红=不准确 |
-| 多义处理 | 一篇多义文章 | 同一文章内自然体现 3-5 次不同含义 |
-| 架构 | 纯前端为主 | OCR + 语音 浏览器本地完成，服务端仅 LLM + 存储 |
+额外功能：AI 朗读全文（TTS），带句子级高亮跟随。
 
 ---
 
 ## 技术栈
 
-| 分层 | 技术 |
-|------|------|
-| 核心框架 | Next.js 15 + React 18 + TypeScript |
-| 状态管理 | Zustand |
-| 样式 | Tailwind CSS |
-| 服务端 | Next.js API Routes (Node.js) |
-| 数据存储 | 服务端 JSON 文件（按月拆分） |
-| 流式交互 | SSE |
-| OCR | Tesseract.js（浏览器端） |
-| TTS / ASR | Web Speech API（浏览器端） |
-| 波形可视化 | wavesurfer.js |
-| AI 服务 | DeepSeek / 通义千问 LLM |
-| 工程化 | ESLint、Prettier、Vitest、Playwright |
+| 分层 | 技术 | 实际用途 |
+|------|------|----------|
+| 框架 | Next.js 16.2 App Router + React 19.2 + TypeScript 5 | 全栈框架 |
+| 样式 | Tailwind CSS 4 | Matrix Green 暗色终端主题 |
+| 状态管理 | Zustand 5 (含 persist 中间件) | 4 个 store (user/reader/wordLearn/history) |
+| AI 文章生成 | DeepSeek Chat API (`deepseek-chat`) | POST `/api/article/generate`，JSON 模式返回 |
+| 语音识别 (ASR) | 百度语音识别 API (服务端) | POST `/api/speech/recognize`，接收 WAV blob |
+| 语音合成 (TTS) | 浏览器 Web Speech API (`SpeechSynthesis`) | 客户端逐句朗读 + 句子级高亮 |
+| OCR | Tesseract.js v7 (浏览器 WASM) | Singleton worker，英语语言包 (~4MB) |
+| 录音 | Web Audio API + ScriptProcessorNode | PCM 16kHz 单声道 → WAV 编码 |
+| 波形可视化 | Canvas 2D (自绘) | 80 柱实时波形 + 录音回放波形 + 扫描动画 |
+| 发音比对 | Levenshtein 编辑距离 + 滑动窗口对齐 | 原始句 vs ASR 识别文本 → 逐词 correct/incorrect |
+| 历史存储 | 服务端 JSON 文件 | `.data/history.json`，原子写入 (tmp+rename)，写入队列 |
+| 字体 | JetBrains Mono (Google Fonts) | 等宽终端风格 |
+| 图标 | Lucide React | 统一的 SVG 图标库 |
+
+**依赖包清单：** `next` `react` `react-dom` `typescript` `tailwindcss` `zustand` `tesseract.js` `lucide-react` `recharts`(未使用) `wavesurfer.js`(未使用)
 
 ---
 
-## 页面结构 & 路由
+## 页面 & 路由
 
-```
-/                    → 首页（拍照入口 + 自评定级）
-/reader/[id]        → 阅读器页（OCR 提取的文本，单词可点击）
-/reader/[id]/word   → 单词学习页（AI 文章 + 跟读练习）
-/history             → 学习记录列表
-/settings            → 设置（修改等级、关于）
-```
+| 路由 | 页面 | 说明 |
+|------|------|------|
+| `/` | 首页 | 选难度 → 输入单词 / 粘贴文本 / 上传图片 → OCR |
+| `/reader/[id]` | 读者页 | OCR 文本 + 点击单词 + AI 朗读 (ReadingBar) |
+| `/reader/[id]/word` | 跟读练习页 | AI 多语义文章 + 录音跟读 + 波形 + 逐词反馈 |
+| `/history` | 历史记录 | 学习记录列表，支持删除单条 |
+| `/settings` | 设置 | 修改英语等级 |
 
 ---
 
 ## 组件树
 
 ```
-Layout (顶部导航栏)
-├── HomePage
-│   ├── LevelSelector        — 自评定级（初级/中级/高级）
-│   ├── ImageUploader        — 拍照/上传图片
-│   └── OCRResultPreview     — OCR 提取文本预览
-│       └── ReadingMaterialCard — 生成阅读材料卡片
+Layout (Navbar + page-frame)
 │
-├── ReaderPage
-│   ├── TextDisplay          — 全文展示，每个词可点击
-│   │   └── WordToken        — 可点击的单词
-│   └── WordPanel            — 侧栏：选中单词信息
-│       └── GenerateButton   — 跳转到单词学习页入口
+├── HomePage (/)
+│   ├── LevelSelector          — 首次访问选等级 (初级/中级/高级)
+│   ├── WordInput              — 直接输入单词 → /reader/direct/word
+│   ├── PasteTextSection       — 粘贴英文文本 → 创建 reader → /reader/[id]
+│   ├── ImageUploader          — 拖拽/拍照/上传图片
+│   └── OCRResultPreview       — OCR 结果预览 + 进入阅读按钮
 │
-├── WordLearnPage            — 核心学习页面
-│   ├── ArticleView          — AI 多义文章（目标词加粗）
-│   │   └── WordToken        — 可点击听发音
-│   ├── SemanticBadges       — 单词多义标签
-│   ├── PronunciationPanel   — 跟读练习面板
-│   │   ├── RecordButton     — 录音按钮
-│   │   ├── WaveformDisplay  — wavesurfer.js 波形
-│   │   └── WordFeedback     — 逐词绿/红高亮反馈
+├── ReaderPage (/reader/[id])
+│   ├── ReadingBar             — AI 朗读控制栏 (播放/暂停/停止 + 语速 0.5x~1.5x)
+│   ├── TextDisplay            — 全文展示 + 句子级朗读高亮
+│   │   └── WordToken          — 可点击的单词 (hover 高亮)
+│   └── WordPanel              — 侧栏: 选中单词 + 生成文章按钮
 │
-├── HistoryPage
+├── WordLearnPage (/reader/[id]/word)
+│   ├── ArticleView            — AI 多语义文章 (目标词加粗)
+│   │   └── SemanticBadges     — 语义标签 (银行/河岸/信赖...)
+│   ├── PronunciationPanel     — 跟读练习面板
+│   │   ├── RecordButton       — 录音按钮 (idle/recording/processing/done)
+│   │   ├── WaveformDisplay    — Canvas 实时波形 + 录音回放 (+ 得分叠加)
+│   │   └── WordFeedback       — 逐词绿/红/金色高亮反馈
+│   └── (自动保存) → useHistoryStore → .data/history.json
+│
+├── HistoryPage (/history)
 │   └── HistoryList
-│       └── HistoryCard      — 每次学习摘要卡片
+│       └── HistoryCard        — 单词、得分、错误词、时间
 │
-└── SettingsPage
-    └── LevelConfig          — 修改英语等级
+└── SettingsPage (/settings)
+    └── LevelConfig            — 修改英语等级
 ```
 
 ---
 
-## Zustand Store 设计
+## Zustand Store
 
-```
-stores/
-├── useUserStore        — 用户等级、昵称（持久化 localStorage）
-├── useReaderStore      — 当前阅读材料、OCR 文本、选中单词
-├── useWordLearnStore   — AI 文章、录音状态、发音反馈
-└── useHistoryStore     — 学习记录列表
-```
+| Store | 持久化 | 关键字段 |
+|-------|--------|---------|
+| `useUserStore` | localStorage | `profile.level`, `isFirstVisit` |
+| `useReaderStore` | 内存 | `currentReader`, `ocrLoading`, `ocrError` |
+| `useWordLearnStore` | 内存 | `article`, `recordingState`, `selectedSentence`, `feedbackTokens`, `score` |
+| `useHistoryStore` | localStorage + API 同步 | `records[]`, `loading`, `error` |
 
-**核心数据流（拍图 → 学词）：**
-
-```
-用户拍照上传
-  → Tesseract.js OCR（浏览器端）
-  → OCR 文本存入 useReaderStore
-  → 用户点击单词 "bank"
-  → POST /api/article/generate { word: "bank", level: "intermediate" }
-  → SSE 流式返回文章（边生成边展示）
-  → 文章存入 useWordLearnStore
-  → 用户录音 → Web Speech API 识别
-  → 逐词比对 → WordFeedback 绿/红渲染
-  → 学习记录存入 useHistoryStore
-```
+**History store 同步策略：** 乐观更新 (optimistic update) + API 调用失败时回滚。`loadRecords()` 合并服务端 + 本地记录去重。
 
 ---
 
@@ -119,58 +101,147 @@ stores/
 
 | 路由 | 方法 | 说明 |
 |------|------|------|
-| `/api/article/generate` | POST | 调用 LLM 流式生成多义文章 (SSE) |
-| `/api/history` | POST | 保存学习记录 |
-| `/api/history` | GET | 获取历史记录列表 |
-
-服务端仅做两件事：**调用 LLM**、**读写 JSON 文件**。OCR 和语音全部在浏览器完成。
-
----
-
-## LLM Prompt 设计
-
-**System Prompt:**
-
-```
-你是一个英语教学专家。根据用户提供的单词和英语等级，
-生成一篇约150-300字的英文文章。
-
-要求：
-1. 文章自然流畅，该单词在文章中至少出现 3-5 次，每次体现不同语义
-2. 用 **{word}** 标记目标单词的每次出现
-3. 根据等级调整词汇量和句式复杂度：
-   - 初级（beginner）：高中词汇、简单句、80-120字
-   - 中级（intermediate）：四级词汇、复合句、150-200字
-   - 高级（advanced）：六级+词汇、复杂句式、200-300字
-4. 文章末尾附上该单词在文中出现的各语义解释（中文）
-
-返回 JSON：
-{
-  "title": "string",
-  "content": "markdown 格式，目标词用 **加粗**",
-  "meanings": [
-    { "meaning": "中文解释", "partOfSpeech": "词性", "example": "文中原句" }
-  ],
-  "difficulty": "beginner | intermediate | advanced",
-  "wordCount": 150
-}
-```
+| `/api/article/generate` | POST | DeepSeek 生成多语义文章 (JSON 模式，30s 超时) |
+| `/api/speech/recognize` | POST | 百度 ASR 语音识别 (16kHz WAV) |
+| `/api/history` | GET | 读取所有学习记录 |
+| `/api/history` | POST | 新增一条学习记录 |
+| `/api/history` | DELETE | 清空所有记录 |
+| `/api/history/[id]` | DELETE | 删除指定记录 |
 
 ---
 
-## 发音比对策略
+## 核心数据流
 
-**算法：文本级逐词比对**（非音频声学分析）
+```
+┌─ 方式 A: 粘贴文本 ───────────────────────────────────────┐
+│  首页 → 粘贴英文文本 → setReader() → /reader/[id]         │
+└──────────────────────────────────────────────────────────┘
 
-1. 用户点击录音按钮 → MediaRecorder 录音 + Web Speech API 实时识别（SpeechRecognition）
-2. 得到用户 ASR 文本后，与用户选中的原文句子做 **Levenshtein 逐词对齐**
-3. 比对规则：
-   - ASR 词与原文词精确匹配（忽略大小写）→ 绿色高亮
-   - ASR 词与原文词不匹配 / 漏读 / 未识别 → 红色高亮
-   - 目标单词（生词）匹配 → 金色边框特别标记
-4. **评分**：匹配词数 / 原文总词数 × 100，存入 `pronunciationScore`
-5. wavesurfer.js 展示用户录音波形 + TTS 生成的标准发音波形对比
-6. 不强制顺序，用户可反复练习任意句子
+┌─ 方式 B: 拍照 OCR ───────────────────────────────────────┐
+│  首页 → ImageUploader → Tesseract.js OCR (浏览器 WASM)   │
+│  → 提取文本 → setReader() → /reader/[id]                  │
+└──────────────────────────────────────────────────────────┘
+
+┌─ 读者页面 ───────────────────────────────────────────────┐
+│  → TextDisplay: 全文展示，单词可点击                       │
+│  → ReadingBar: AI 逐句朗读 + 句子高亮跟随                  │
+│  → 点击单词 → WordPanel → "生成学习文章"                   │
+│  → POST /api/article/generate { word, level }              │
+│  → DeepSeek 返回 JSON Article                             │
+└──────────────────────────────────────────────────────────┘
+
+┌─ 跟读练习页 ─────────────────────────────────────────────┐
+│  → ArticleView: 多语义文章展示                             │
+│  → 点击句子 → PronunciationPanel                          │
+│  → RecordButton → Web Audio 录音 (16kHz PCM)              │
+│  → WaveformDisplay: Canvas 实时波形 (ref 驱动，60fps)     │
+│  → stop() → WAV blob → POST /api/speech/recognize          │
+│  → 百度 ASR 返回文本                                       │
+│  → Levenshtein 逐词对齐 → 绿(对) / 红(错) / 金(目标词)    │
+│  → 评分 = 正确词/总词 × 100                                │
+│  → 自动保存到 .data/history.json                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 设计系统: Matrix Green
+
+| Token | 值 |
+|-------|----|
+| `--color-primary` | `#00FF41` |
+| `--color-bg` | `#0D1117` |
+| `--color-surface` | `#161B22` |
+| `--color-text` | `#E6EDF3` |
+| `--color-text-muted` | `#8B949E` |
+| `--color-error` | `#FF3355` |
+| `--color-warning` | `#FFB800` |
+| `--font-heading` | JetBrains Mono |
+
+工具类: `terminal-card` / `terminal-inset` / `terminal-btn` / `text-glow` / `scanline` / `page-frame`
+
+---
+
+## 文件结构
+
+```
+src/
+├── app/
+│   ├── layout.tsx                    # 根布局 + 字体 + metadata
+│   ├── globals.css                   # 设计系统 + 工具类
+│   ├── page.tsx                      # 首页
+│   ├── api/
+│   │   ├── article/generate/route.ts # DeepSeek LLM
+│   │   ├── speech/recognize/route.ts # 百度 ASR
+│   │   └── history/
+│   │       ├── route.ts              # GET/POST/DELETE
+│   │       └── [id]/route.ts         # DELETE single
+│   ├── reader/[id]/
+│   │   ├── page.tsx                  # 读者页 + ReadingBar
+│   │   └── word/page.tsx             # 跟读练习页
+│   ├── history/page.tsx              # 学习记录
+│   └── settings/page.tsx             # 设置
+├── components/
+│   ├── home/                         # LevelSelector, ImageUploader, WordInput, OCRResultPreview
+│   ├── reader/                       # ReadingBar, TextDisplay, WordPanel, WordToken
+│   ├── word-learn/                   # ArticleView, PronunciationPanel, RecordButton, WaveformDisplay, WordFeedback, SemanticBadges
+│   ├── history/                      # HistoryList, HistoryCard
+│   ├── settings/                     # LevelConfig
+│   └── layout/                       # Navbar
+├── lib/
+│   ├── ocr.ts                        # Tesseract.js singleton worker
+│   ├── tts.ts                        # Web Speech API TTS (逐句朗读)
+│   ├── audio-record.ts              # Web Audio API 录音 + WAV 编码
+│   ├── baidu-asr.ts                  # 百度 ASR (OAuth token + 识别)
+│   ├── pronunciation.ts             # Levenshtein 对齐 + 评分
+│   └── history-file.ts              # 服务端 JSON 文件读写
+├── stores/
+│   ├── useUserStore.ts              # 用户等级 (persist)
+│   ├── useReaderStore.ts            # 阅读材料 (内存)
+│   ├── useWordLearnStore.ts         # 学习状态 (内存)
+│   └── useHistoryStore.ts           # 历史记录 (persist + API)
+├── types/
+│   └── index.ts                     # 全部 TypeScript 类型
+└── data/
+    └── mock.ts                      # 开发用 mock 数据
+```
+
+---
+
+## 关键实现细节
+
+### OCR (`lib/ocr.ts`)
+- Tesseract.js v7 singleton worker (`createWorker('eng', 1, { logger })`)
+- Module-level `currentOnProgress` 变量解决闭包陈旧问题
+- 支持 data URL / File / Canvas / Image 输入
+
+### 录音 (`lib/audio-record.ts`)
+- `createAudioRecorder({ targetSampleRate: 16000, onSamples })`
+- `ScriptProcessorNode` (4096 buffer) 捕获原始 PCM
+- `stop()` 返回 `{ blob: WAV, samples: Float32Array }`
+- `onSamples` 回调提供实时波形数据 (通过 ref 传递，不触发 React re-render)
+- 线性重采样 (如需)
+- 空录音返回 100ms 静音 WAV
+
+### 波形 (`WaveformDisplay.tsx`)
+- Canvas 2D，DPR 感知渲染
+- 性能关键: ref 驱动 (非 state)、fillRect 而非路径、ResizeObserver 缓存尺寸、颜色查找表、stride 采样
+- 三态: 实时 (录音中) / 扫描动画 (分析中) / 静态回放 (完成)
+
+### 发音比对 (`lib/pronunciation.ts`)
+- `alignWords(originalWords, spokenWords, targetWord)`
+- 滑动窗口 (i-2 到 i+3) 搜索匹配
+- 精确匹配 或 Levenshtein ≤ 1 为 correct
+- `calculateScore(tokens)` = correct/总数 × 100
+
+### TTS (`lib/tts.ts`)
+- `createTtsReader(sentences, { rate, onSentenceChange, onEnd })`
+- Chrome 兼容: play() 前 cancel() 重置 + setTimeout 延迟 + 保持 utterance 引用防 GC
+- 支持 pause/resume/stop/setRate
+
+### 历史存储 (`lib/history-file.ts`)
+- `.data/history.json`，原子写入 (tmp 文件 + rename)
+- 写入队列序列化并发
 
 ---
 
@@ -178,59 +249,12 @@ stores/
 
 | 场景 | 处理 |
 |------|------|
-| OCR 识别质量差 | 提示重拍，建议光线充足、文字清晰 |
-| LLM API 超时/限流 | 骨架屏 loading，30s 超时提示重试 |
-| Web Speech API 不可用 | 检测 `webkitSpeechRecognition`，提示用 Chrome |
-| 录音无声音 | 波形幅值检测，波平 → 提示"未检测到声音，请重试" |
-| 文章中出现非英语 token | 前端过滤，不参与发音比对 |
-| JSON 文件过大 | 按月拆分 `history-2026-05.json`，单文件上限 500 条记录 |
-| 图片过大 | 前端压缩至 1920px 宽度后送 OCR |
-
----
-
-## 数据库 JSON 结构
-
-### 阅读材料（reader）
-
-```json
-// data/readers/reader-{timestamp}.json
-{
-  "id": "r_1717000000000",
-  "ocrText": "The full extracted text...",
-  "title": "从 OCR 文本首行截取",
-  "createdAt": "2026-05-30T10:00:00Z",
-  "imageDataUrl": "base64..."  // 可选，压缩后的缩略图
-}
-```
-
-### 学习记录（history）
-
-```json
-// data/history/history-2026-05.json
-[
-  {
-    "id": "h_1717000000000",
-    "readerId": "r_1717000000000",
-    "word": "bank",
-    "articleTitle": "The Many Faces of Bank",
-    "articleContent": "...",
-    "meanings": [
-      { "meaning": "银行", "partOfSpeech": "n.", "example": "..." },
-      { "meaning": "河岸", "partOfSpeech": "n.", "example": "..." }
-    ],
-    "pronunciationScore": 85,
-    "incorrectWords": ["bank", "financial"],
-    "createdAt": "2026-05-30T10:30:00Z"
-  }
-]
-```
-
----
-
-## 非功能需求
-
-- **性能**: 首页 LCP < 2s, 文章 SSE 首字节 < 3s
-- **兼容性**: Chrome 90+, Edge 90+（Web Speech API 支持）
-- **响应式**: 桌面端优先，移动端基本可用
-- **隐私**: OCR 和录音均在浏览器本地处理，不上传原始图片和音频到服务端
-- **国际化**: 界面中文，学习内容英文
+| OCR 识别无文字 | 提示"未识别到文字，请确认图片清晰" |
+| DeepSeek API 超时/异常 | 30s 超时 + 错误提示 + 重试按钮 |
+| 百度 ASR 失败 | 区分 no-speech / asr-failed / mic-denied |
+| 麦克风权限拒绝 | 引导用户去浏览器设置开启 |
+| 录音无声音 | blob size < 44 字节检测 → 提示"未检测到语音" |
+| 空句子 (TTS) | `splitToSentences` 过滤空串，ReadingBar 返回 null |
+| SpeechSynthesis 不支持 | ReadingBar 隐藏 |
+| 读者页无匹配数据 | Fallback 页面 + 返回首页 |
+| History API 失败 | 乐观更新回滚 + 本地 recovery |
