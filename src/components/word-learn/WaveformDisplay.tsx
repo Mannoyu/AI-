@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Activity } from "lucide-react";
 
 interface WaveformDisplayProps {
@@ -13,41 +13,43 @@ interface WaveformDisplayProps {
 }
 
 const BAR_COUNT = 80;
-const R = 0, G = 255, B = 65;
+const R = 0;
+const G = 255;
+const B = 65;
+const IDLE_PEAKS = Array.from({ length: BAR_COUNT }, () => 0.04);
 
-/** Build rgba on the fly — inline to avoid string concat overhead in hot loop. */
 const barColorCache = new Array<string>(256);
+
 function barColor(alpha255: number): string {
-  let c = barColorCache[alpha255];
-  if (!c) {
-    c = `rgba(${R},${G},${B},${(alpha255 / 255).toFixed(2)})`;
-    barColorCache[alpha255] = c;
+  let color = barColorCache[alpha255];
+  if (!color) {
+    color = `rgba(${R},${G},${B},${(alpha255 / 255).toFixed(2)})`;
+    barColorCache[alpha255] = color;
   }
-  return c;
+
+  return color;
 }
 
-/**
- * Downsample audio samples into peak amplitudes.
- * Fast path: stride through buckets.
- */
-function downsamplePeaks(samples: Float32Array, count: number, out: number[]): void {
+function downsamplePeaks(samples: Float32Array, count: number, out: number[]) {
   const len = samples.length;
   if (len === 0) {
-    for (let i = 0; i < count; i++) out[i] = 0.04;
+    for (let i = 0; i < count; i += 1) out[i] = 0.04;
     return;
   }
 
   const step = len / count;
-  for (let i = 0; i < count; i++) {
+  for (let i = 0; i < count; i += 1) {
     const start = Math.floor(i * step);
     const end = Math.floor((i + 1) * step);
     const stride = Math.max(1, Math.floor((end - start) / 6));
     let peak = 0;
+
     for (let j = start; j < end; j += stride) {
-      const v = samples[j];
-      if (v > peak) peak = v;
-      else if (-v > peak) peak = -v;
+      const value = samples[j];
+      if (value > peak) peak = value;
+      else if (-value > peak) peak = -value;
     }
+
     out[i] = peak > 1 ? 1 : peak;
   }
 }
@@ -62,57 +64,55 @@ export function WaveformDisplay({
 }: WaveformDisplayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const animFrameRef = useRef(0);
-  const wRef = useRef(0);
-  const hRef = useRef(0);
-
+  const frameCounterRef = useRef(0);
+  const widthRef = useRef(0);
+  const heightRef = useRef(0);
+  const rafIdRef = useRef(0);
   const modeRef = useRef({ isRecording, isProcessing, hasResult });
-  modeRef.current = { isRecording, isProcessing, hasResult };
 
-  // Cache recorded peaks so we don't recompute every frame
-  const recordedPeaksRef = useRef<number[] | null>(null);
-  const prevRecordedRef = useRef<Float32Array | null>(null);
+  const recordedPeaks = useMemo(() => {
+    if (!recordedSamples) return null;
 
-  // Compute recorded peaks only when recordedSamples changes
-  if (recordedSamples !== prevRecordedRef.current) {
-    prevRecordedRef.current = recordedSamples;
-    if (recordedSamples) {
-      const peaks = new Array<number>(BAR_COUNT);
-      downsamplePeaks(recordedSamples, BAR_COUNT, peaks);
-      recordedPeaksRef.current = peaks;
-    } else {
-      recordedPeaksRef.current = null;
-    }
-  }
+    const peaks = new Array<number>(BAR_COUNT);
+    downsamplePeaks(recordedSamples, BAR_COUNT, peaks);
+    return peaks;
+  }, [recordedSamples]);
 
-  // ResizeObserver to cache dimensions (avoids getBoundingClientRect per frame)
+  useEffect(() => {
+    modeRef.current = { isRecording, isProcessing, hasResult };
+  }, [hasResult, isProcessing, isRecording]);
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const updateSize = () => {
       const rect = container.getBoundingClientRect();
-      wRef.current = rect.width;
-      hRef.current = rect.height;
+      widthRef.current = rect.width;
+      heightRef.current = rect.height;
 
       const canvas = canvasRef.current;
       if (!canvas) return;
+
       const dpr = window.devicePixelRatio || 1;
-      const bw = Math.floor(rect.width * dpr);
-      const bh = Math.floor(rect.height * dpr);
-      if (canvas.width !== bw || canvas.height !== bh) {
-        canvas.width = bw;
-        canvas.height = bh;
+      const width = Math.floor(rect.width * dpr);
+      const height = Math.floor(rect.height * dpr);
+
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
       }
     };
 
     updateSize();
-    const ro = new ResizeObserver(updateSize);
-    ro.observe(container);
-    return () => ro.disconnect();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
+
+    return () => {
+      observer.disconnect();
+    };
   }, []);
 
-  // Animation loop — runs once for the lifetime of the component
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -121,131 +121,119 @@ export function WaveformDisplay({
     if (!ctx) return;
 
     let running = true;
-    const peaksBuf = new Array<number>(BAR_COUNT);
+    const peaksBuffer = new Array<number>(BAR_COUNT);
 
-    function frame() {
-      if (!running || !ctx || !canvas) return;
+    const draw = () => {
+      if (!running) return;
 
-      const w = wRef.current;
-      const h = hRef.current;
-      if (w <= 0 || h <= 0) {
-        animFrameRef.current = requestAnimationFrame(frame);
+      const width = widthRef.current;
+      const height = heightRef.current;
+      if (width <= 0 || height <= 0) {
+        rafIdRef.current = requestAnimationFrame(draw);
         return;
       }
 
       const dpr = window.devicePixelRatio || 1;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
+      ctx.clearRect(0, 0, width, height);
 
-      const { isRecording: rec, isProcessing: proc, hasResult: done } = modeRef.current;
-
-      // Get peaks from the right source
+      const mode = modeRef.current;
       let peaks: number[];
-      if (rec) {
+
+      if (mode.isRecording) {
         const live = liveSamplesRef.current;
         if (live) {
-          downsamplePeaks(live, BAR_COUNT, peaksBuf);
-          peaks = peaksBuf;
+          downsamplePeaks(live, BAR_COUNT, peaksBuffer);
+          peaks = peaksBuffer;
         } else {
-          peaks = new Array(BAR_COUNT).fill(0.04);
+          peaks = IDLE_PEAKS;
         }
-      } else if (done && recordedPeaksRef.current) {
-        peaks = recordedPeaksRef.current;
-      } else if (proc && recordedPeaksRef.current) {
-        peaks = recordedPeaksRef.current;
+      } else if ((mode.isProcessing || mode.hasResult) && recordedPeaks) {
+        peaks = recordedPeaks;
       } else {
-        peaks = new Array(BAR_COUNT).fill(0.04);
+        peaks = IDLE_PEAKS;
       }
 
-      const barW = (w / BAR_COUNT) * 0.72;
-      const maxHalf = h * 0.44;
-      const cy = h / 2;
+      const barWidth = (width / BAR_COUNT) * 0.72;
+      const maxHalf = height * 0.44;
+      const centerY = height / 2;
 
-      animFrameRef.current++;
+      frameCounterRef.current += 1;
 
-      for (let i = 0; i < BAR_COUNT; i++) {
+      for (let i = 0; i < BAR_COUNT; i += 1) {
         const amp = peaks[i];
-        if (amp < 0.001) continue; // skip invisible bars
+        if (amp < 0.001) continue;
 
-        // Opacity
         let alpha: number;
-        if (rec) {
-          alpha = 115 + Math.round(amp * 140); // 0.45–1.0
-        } else if (proc) {
-          const scan = ((animFrameRef.current * 2.5 + i) % BAR_COUNT) / BAR_COUNT;
-          alpha = 51 + Math.round(204 * (1 - Math.abs(scan - 0.5) * 2)); // 0.2–1.0
+        if (mode.isRecording) {
+          alpha = 115 + Math.round(amp * 140);
+        } else if (mode.isProcessing) {
+          const scan =
+            ((frameCounterRef.current * 2.5 + i) % BAR_COUNT) / BAR_COUNT;
+          alpha = 51 + Math.round(204 * (1 - Math.abs(scan - 0.5) * 2));
         } else {
-          alpha = 153; // 0.6
+          alpha = 153;
         }
 
         const half = amp * maxHalf < 1.5 ? 1.5 : amp * maxHalf;
-        const x = i * (w / BAR_COUNT);
-        const y = cy - half;
+        const x = i * (width / BAR_COUNT);
+        const y = centerY - half;
+        const stripeHeight = Math.min(half * 0.3, 4);
 
-        // Use fillRect for speed (no path operations)
-        // Top half — dimmer
         ctx.fillStyle = barColor(Math.round(alpha * 0.55));
-        ctx.fillRect(x, y, barW, half);
+        ctx.fillRect(x, y, barWidth, half);
 
-        // Center stripe — brightest
-        const stripeH = Math.min(half * 0.3, 4);
         ctx.fillStyle = barColor(Math.min(alpha + 51, 255));
-        ctx.fillRect(x, cy - stripeH / 2, barW, stripeH);
+        ctx.fillRect(x, centerY - stripeHeight / 2, barWidth, stripeHeight);
 
-        // Bottom half — dimmer
         ctx.fillStyle = barColor(Math.round(alpha * 0.55));
-        ctx.fillRect(x, cy, barW, half);
+        ctx.fillRect(x, centerY, barWidth, half);
       }
 
-      animFrameRef.current = requestAnimationFrame(frame);
-    }
+      rafIdRef.current = requestAnimationFrame(draw);
+    };
 
-    animFrameRef.current = requestAnimationFrame(frame);
+    rafIdRef.current = requestAnimationFrame(draw);
 
     return () => {
       running = false;
-      cancelAnimationFrame(animFrameRef.current);
+      cancelAnimationFrame(rafIdRef.current);
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [liveSamplesRef, recordedPeaks]);
 
   const statusLabel = isRecording
-    ? "录音中 — 实时波形"
+    ? "录音中 · 实时波形"
     : isProcessing
-      ? "分析中..."
+      ? "处理中..."
       : hasResult
         ? "录音波形"
         : "等待录音";
 
   return (
     <div className="terminal-inset rounded-2xl p-5">
-      <div className="flex items-center gap-2 mb-3">
+      <div className="mb-3 flex items-center gap-2">
         <Activity
-          className={`w-4 h-4 ${
-            isRecording ? "text-primary animate-pulse" : "text-text-muted"
+          className={`h-4 w-4 ${
+            isRecording ? "animate-pulse text-primary" : "text-text-muted"
           }`}
         />
-        <span className="text-sm font-medium text-text-muted">
-          {statusLabel}
-        </span>
+        <span className="text-sm font-medium text-text-muted">{statusLabel}</span>
         {isRecording && (
-          <span className="ml-auto w-2 h-2 rounded-full bg-error animate-pulse" />
+          <span className="ml-auto h-2 w-2 animate-pulse rounded-full bg-error" />
         )}
       </div>
 
       <div
         ref={containerRef}
-        className="relative h-24 rounded-xl overflow-hidden bg-surface-alt/50"
+        className="relative h-24 overflow-hidden rounded-xl bg-surface-alt/50"
       >
-        <canvas
-          ref={canvasRef}
-          className="w-full h-full block"
-        />
+        <canvas ref={canvasRef} className="block h-full w-full" />
 
         {hasResult && score !== null && (
-          <div className="absolute inset-0 bg-surface/50 flex items-center justify-center">
-            <div className="text-center">
+          <div className="absolute right-3 top-3">
+            <div className="rounded-xl border border-primary/10 bg-surface/85 px-3 py-2 text-center shadow-terminal">
               <p
-                className="text-3xl font-bold"
+                className="text-xl font-bold leading-none"
                 style={{
                   color:
                     score >= 80
@@ -258,7 +246,7 @@ export function WaveformDisplay({
               >
                 {score}
               </p>
-              <p className="text-xs text-text-muted mt-0.5">发音得分</p>
+              <p className="mt-1 text-[10px] text-text-muted">发音得分</p>
             </div>
           </div>
         )}

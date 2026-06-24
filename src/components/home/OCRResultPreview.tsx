@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { FileText, ArrowRight, RefreshCw } from "lucide-react";
+import { ArrowRight, FileText, RefreshCw } from "lucide-react";
 import type { ReadingMaterial } from "@/types";
 
 interface OCRResultPreviewProps {
@@ -14,56 +14,60 @@ export function OCRResultPreview({ reader, onRetry }: OCRResultPreviewProps) {
 
   const previewText =
     reader.ocrText.length > 200
-      ? reader.ocrText.slice(0, 200) + "..."
+      ? `${reader.ocrText.slice(0, 200)}...`
       : reader.ocrText;
-
-  const handleEnterReader = () => {
-    router.push(`/reader/${reader.id}`);
-  };
+  const wordCount = reader.ocrText.split(/\s+/).filter(Boolean).length;
 
   return (
     <div className="terminal-card p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h2
-          className="text-xl font-semibold flex items-center gap-2"
-          style={{ fontFamily: "var(--font-heading)" }}
-        >
-          <FileText className="w-5 h-5 text-primary" />
-          识别结果
-        </h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2
+            className="flex items-center gap-2 text-xl font-semibold"
+            style={{ fontFamily: "var(--font-heading)" }}
+          >
+            <FileText className="h-5 w-5 text-primary" />
+            识别结果
+          </h2>
+          <p className="mt-1 text-sm text-text-muted">
+            已生成可阅读文本，确认无误后即可进入阅读器。
+          </p>
+        </div>
         <button
           onClick={onRetry}
-          className="flex items-center gap-1.5 text-sm text-text-muted hover:text-text transition-colors duration-200"
+          className="flex min-h-11 items-center gap-1.5 rounded-md px-3 py-2 text-sm text-text-muted transition-colors duration-200 hover:bg-surface hover:text-text"
         >
-          <RefreshCw className="w-3.5 h-3.5" />
+          <RefreshCw className="h-3.5 w-3.5" />
           重新识别
         </button>
       </div>
 
-      {/* Reading Material Card */}
-      <div className="terminal-inset rounded-2xl p-5 mb-4">
+      <div className="terminal-inset mb-4 rounded-2xl p-5">
         <h3
-          className="text-lg font-semibold mb-2"
+          className="mb-2 text-lg font-semibold"
           style={{ fontFamily: "var(--font-heading)" }}
         >
           {reader.title}
         </h3>
-        <p className="text-sm text-text-muted leading-relaxed whitespace-pre-line">
+        <p className="whitespace-pre-line text-sm leading-relaxed text-text-muted">
           {previewText}
         </p>
-        <p className="text-xs text-text-light mt-3">
-          {reader.ocrText.split(/\s+/).length} 个单词 · 识别时间:{" "}
-          {new Date(reader.createdAt).toLocaleString("zh-CN")}
-        </p>
+        <div className="mt-4 flex flex-wrap gap-2 text-xs text-text-light">
+          <span className="rounded-md border border-[rgba(0,255,65,0.08)] bg-surface px-2.5 py-1">
+            约 {wordCount} 词
+          </span>
+          <span className="rounded-md border border-[rgba(0,255,65,0.08)] bg-surface px-2.5 py-1">
+            识别时间 {new Date(reader.createdAt).toLocaleString("zh-CN")}
+          </span>
+        </div>
       </div>
 
-      {/* Enter Reader Button */}
       <button
-        onClick={handleEnterReader}
-        className="terminal-btn w-full flex items-center justify-center gap-2 px-6 py-3 bg-primary/15 text-primary"
+        onClick={() => router.push(`/reader/${reader.id}`)}
+        className="terminal-btn flex min-h-12 w-full items-center justify-center gap-2 bg-primary/15 px-6 py-3 text-primary"
       >
-        <span className="font-medium">进入阅读</span>
-        <ArrowRight className="w-4 h-4" />
+        <span className="font-medium">进入阅读器</span>
+        <ArrowRight className="h-4 w-4" />
       </button>
     </div>
   );

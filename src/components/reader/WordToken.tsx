@@ -1,7 +1,5 @@
 "use client";
 
-import { useState } from "react";
-
 interface WordTokenProps {
   word: string;
   isTarget?: boolean;
@@ -17,47 +15,51 @@ export function WordToken({
   onClick,
   feedbackStatus,
 }: WordTokenProps) {
-  const [hovered, setHovered] = useState(false);
-
+  const interactive = typeof onClick === "function";
   const baseClasses =
-    "inline-block px-1 py-0.5 rounded-md text-sm leading-relaxed transition-all duration-150 cursor-pointer select-none";
+    "inline-block rounded-md px-1 py-0.5 text-sm leading-relaxed transition-all duration-150 select-none align-baseline";
 
-  let statusClasses = "hover:bg-primary/10 hover:text-primary";
+  let statusClasses = interactive
+    ? "cursor-pointer hover:bg-primary/10 hover:text-primary"
+    : "cursor-default";
 
   if (feedbackStatus === "correct") {
-    statusClasses = "bg-success/15 text-success font-medium";
+    statusClasses = "bg-success/15 font-medium text-success";
   } else if (feedbackStatus === "incorrect") {
-    statusClasses = "bg-error/15 text-error font-medium";
+    statusClasses = "bg-error/15 font-medium text-error";
   } else if (feedbackStatus === "target") {
-    statusClasses =
-      "bg-gold/15 text-gold font-semibold ring-1 ring-gold/40";
+    statusClasses = "bg-gold/15 font-semibold text-gold ring-1 ring-gold/40";
   }
 
   if (isTarget && !feedbackStatus) {
-    statusClasses = "bg-primary/10 text-primary font-semibold";
+    statusClasses = "bg-primary/10 font-semibold text-primary";
   }
 
   if (isSelected) {
-    statusClasses = "bg-primary/15 text-primary font-medium shadow-terminal";
+    statusClasses = "bg-primary/15 font-medium text-primary shadow-terminal";
   }
 
   const cleanWord = word.replace(/[^a-zA-Z'-]/g, "");
 
   if (!cleanWord) {
-    return <span>{word} </span>;
+    return <span>{word}</span>;
+  }
+
+  if (!interactive) {
+    return <span className={`${baseClasses} ${statusClasses}`}>{word}</span>;
   }
 
   return (
-    <span
-      className={`${baseClasses} ${statusClasses}`}
+    <button
+      type="button"
+      className={`${baseClasses} ${statusClasses} border-0 bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-1 focus-visible:ring-offset-bg`}
       onClick={() => onClick?.(cleanWord)}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => e.key === "Enter" && onClick?.(cleanWord)}
+      aria-pressed={isSelected}
+      aria-label={
+        isSelected ? `已选择单词 ${cleanWord}` : `选择单词 ${cleanWord}`
+      }
     >
       {word}
-    </span>
+    </button>
   );
 }

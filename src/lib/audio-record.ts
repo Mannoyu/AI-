@@ -9,15 +9,11 @@
 
 export interface AudioRecorder {
   start(): Promise<void>;
-  /** Returns the WAV blob and the full Float32Array of recorded samples. */
   stop(): Promise<{ blob: Blob; samples: Float32Array }>;
+  dispose(): Promise<void>;
   isRecording(): boolean;
 }
 
-/**
- * Encode Float32 PCM samples to a WAV ArrayBuffer (16-bit PCM, mono).
- */
-// eslint-disable-next-line @typescript-eslint/no-wrapper-object-types
 function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffer {
   const byteCount = samples.length * 2;
   const buffer = new ArrayBuffer(44 + byteCount);
@@ -28,8 +24,8 @@ function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffer {
   writeAscii(view, 8, "WAVE");
   writeAscii(view, 12, "fmt ");
   view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true); // PCM
-  view.setUint16(22, 1, true); // mono
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, sampleRate * 2, true);
   view.setUint16(32, 2, true);
@@ -38,118 +34,176 @@ function encodeWAV(samples: Float32Array, sampleRate: number): ArrayBuffer {
   view.setUint32(40, byteCount, true);
 
   let offset = 44;
-  for (let i = 0; i < samples.length; i++) {
+  for (let i = 0; i < samples.length; i += 1) {
     const clamped = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
+    view.setInt16(
+      offset,
+      clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff,
+      true
+    );
     offset += 2;
   }
 
   return buffer;
 }
 
-function writeAscii(view: DataView, offset: number, str: string): void {
-  for (let i = 0; i < str.length; i++) {
-    view.setUint8(offset + i, str.charCodeAt(i));
+function writeAscii(view: DataView, offset: number, value: string): void {
+  for (let i = 0; i < value.length; i += 1) {
+    view.setUint8(offset + i, value.charCodeAt(i));
   }
 }
 
 export interface AudioRecorderOptions {
   targetSampleRate?: number;
-  /** Called with the latest chunk of samples for live waveform display. */
   onSamples?: (samples: Float32Array) => void;
 }
 
-/**
- * Create an audio recorder that captures from the microphone.
- * Uses AudioContext + ScriptProcessorNode for raw PCM access.
- * On stop(), returns a WAV Blob and the full audio samples.
- */
 export async function createAudioRecorder(
   options: AudioRecorderOptions = {}
 ): Promise<AudioRecorder> {
   const { targetSampleRate = 16000, onSamples } = options;
 
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.mediaDevices ||
+    !navigator.mediaDevices.getUserMedia
+  ) {
+    throw new Error("Audio recording is not supported in this browser");
+  }
+
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const audioCtx = new AudioContext({ sampleRate: targetSampleRate });
   const source = audioCtx.createMediaStreamSource(stream);
-  const actualRate = audioCtx.sampleRate;
+  const sink = audioCtx.createGain();
+  sink.gain.value = 0;
+  sink.connect(audioCtx.destination);
 
-  // Store all recorded samples for waveform snapshot and WAV encoding
+  const actualRate = audioCtx.sampleRate;
   const allSamples: number[] = [];
   let scriptNode: ScriptProcessorNode | null = null;
+  let started = false;
+  let stopped = false;
+  let released = false;
 
-  const recorder: AudioRecorder = {
-    async start(): Promise<void> {
+  function createSilentResult() {
+    const silent = new Float32Array(1600);
+    const wavBuffer = encodeWAV(silent, targetSampleRate);
+
+    return {
+      blob: new Blob([wavBuffer], { type: "audio/wav" }),
+      samples: silent,
+    };
+  }
+
+  function cleanupGraph() {
+    if (scriptNode) {
+      scriptNode.onaudioprocess = null;
+      try {
+        scriptNode.disconnect();
+      } catch {
+        // Already disconnected.
+      }
+      scriptNode = null;
+    }
+
+    try {
+      source.disconnect();
+    } catch {
+      // Source may not have been connected yet.
+    }
+
+    try {
+      sink.disconnect();
+    } catch {
+      // Sink may already be disconnected.
+    }
+  }
+
+  async function releaseResources() {
+    if (released) {
+      return;
+    }
+
+    released = true;
+    stream.getTracks().forEach((track) => track.stop());
+    if (audioCtx.state !== "closed") {
+      await audioCtx.close();
+    }
+  }
+
+  return {
+    async start() {
+      if (started || stopped) {
+        return;
+      }
+
+      started = true;
       allSamples.length = 0;
+      await audioCtx.resume();
 
       scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
-
       scriptNode.onaudioprocess = (event: AudioProcessingEvent) => {
         const input = event.inputBuffer.getChannelData(0);
-        // Copy samples for waveform (use every Nth sample to reduce data)
-        const chunk = Array.from(input);
-        for (const s of chunk) allSamples.push(s);
-        // Notify listener for live waveform
-        if (onSamples) {
-          onSamples(input);
+        for (let i = 0; i < input.length; i += 1) {
+          allSamples.push(input[i]);
         }
+
+        onSamples?.(input);
       };
 
       source.connect(scriptNode);
-      scriptNode.connect(audioCtx.destination);
+      scriptNode.connect(sink);
     },
 
-    async stop(): Promise<{ blob: Blob; samples: Float32Array }> {
-      // Stop the source first — no more audio
-      source.disconnect();
-      stream.getTracks().forEach((t) => t.stop());
-
-      // Wait for the ScriptProcessor to flush its buffer
-      await new Promise((r) => setTimeout(r, 300));
-
-      if (scriptNode) {
-        scriptNode.disconnect();
-        scriptNode = null;
+    async stop() {
+      if (stopped) {
+        return createSilentResult();
       }
-      await audioCtx.close();
 
-      console.log(`[AudioRecorder] Total samples: ${allSamples.length}`);
+      stopped = true;
+
+      if (started) {
+        await new Promise((resolve) => window.setTimeout(resolve, 120));
+      }
+
+      cleanupGraph();
+      await releaseResources();
 
       if (allSamples.length === 0) {
-        // Return minimal silent WAV instead of empty
-        const silent = new Float32Array(1600); // 100ms of silence
-        const wavBuffer = encodeWAV(silent, targetSampleRate);
-        console.warn("[AudioRecorder] No audio captured, returning silence");
-        return {
-          blob: new Blob([wavBuffer], { type: "audio/wav" }),
-          samples: silent,
-        };
+        return createSilentResult();
       }
 
       const combined = new Float32Array(allSamples);
-
-      // Resample if needed
-      let samples: Float32Array = combined;
-      if (actualRate !== targetSampleRate) {
-        samples = resample(combined, actualRate, targetSampleRate);
-      }
+      const samples =
+        actualRate === targetSampleRate
+          ? combined
+          : resample(combined, actualRate, targetSampleRate);
 
       const wavBuffer = encodeWAV(samples, targetSampleRate);
+
       return {
         blob: new Blob([wavBuffer], { type: "audio/wav" }),
         samples,
       };
     },
 
-    isRecording(): boolean {
-      return scriptNode !== null;
+    async dispose() {
+      if (stopped) {
+        await releaseResources();
+        return;
+      }
+
+      stopped = true;
+      cleanupGraph();
+      await releaseResources();
+    },
+
+    isRecording() {
+      return started && !stopped;
     },
   };
-
-  return recorder;
 }
 
-/** Simple linear resampling. */
 function resample(
   samples: Float32Array,
   fromRate: number,
@@ -159,7 +213,7 @@ function resample(
   const newLength = Math.floor(samples.length / ratio);
   const result = new Float32Array(newLength);
 
-  for (let i = 0; i < newLength; i++) {
+  for (let i = 0; i < newLength; i += 1) {
     const srcIndex = i * ratio;
     const srcFloor = Math.floor(srcIndex);
     const srcCeil = Math.min(srcFloor + 1, samples.length - 1);

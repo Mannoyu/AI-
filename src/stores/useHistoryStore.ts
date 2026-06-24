@@ -2,20 +2,166 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { HistoryRecord } from "@/types";
+import type { Difficulty, HistoryRecord } from "@/types";
+
+const HISTORY_LOAD_ERROR = "加载学习记录失败，请稍后重试。";
+const HISTORY_SAVE_ERROR = "保存学习记录失败，请稍后重试。";
+const HISTORY_REMOVE_ERROR = "删除学习记录失败，请稍后重试。";
+const HISTORY_CLEAR_ERROR = "清空学习记录失败，请稍后重试。";
 
 interface HistoryState {
   records: HistoryRecord[];
   loading: boolean;
   error: string | null;
-  /** Fetch records from server (call once on app mount). */
+  hydrated: boolean;
+  setHydrated: (hydrated: boolean) => void;
+  getRecordById: (id: string) => HistoryRecord | null;
   loadRecords: () => Promise<void>;
-  /** Add a record locally + POST to server. */
   addRecord: (record: HistoryRecord) => Promise<void>;
-  /** Remove a record locally + DELETE from server. */
   removeRecord: (id: string) => Promise<void>;
-  /** Clear all records locally + DELETE on server. */
   clearRecords: () => Promise<void>;
+}
+
+const VALID_DIFFICULTIES: Difficulty[] = [
+  "beginner",
+  "intermediate",
+  "advanced",
+];
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0
+    )
+    .map((item) => item.trim());
+}
+
+function normalizeDifficulty(value: unknown): Difficulty | undefined {
+  return VALID_DIFFICULTIES.includes(value as Difficulty)
+    ? (value as Difficulty)
+    : undefined;
+}
+
+function normalizeMeanings(value: unknown): HistoryRecord["meanings"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter(isRecord)
+    .map((item) => ({
+      meaning: normalizeString(item.meaning),
+      partOfSpeech: normalizeString(item.partOfSpeech),
+      example: normalizeString(item.example),
+    }))
+    .filter((item) => item.meaning && item.partOfSpeech && item.example);
+}
+
+function normalizeHistoryRecord(value: unknown): HistoryRecord | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = normalizeString(value.id);
+  const readerId = normalizeString(value.readerId);
+  const word = normalizeString(value.word);
+  const articleTitle = normalizeString(value.articleTitle);
+  const articleContent = normalizeString(value.articleContent);
+  const articleDifficulty = normalizeDifficulty(value.articleDifficulty);
+  const createdAt = normalizeString(value.createdAt);
+  const pronunciationScore =
+    typeof value.pronunciationScore === "number" &&
+    Number.isFinite(value.pronunciationScore)
+      ? Math.max(0, Math.min(100, Math.round(value.pronunciationScore)))
+      : NaN;
+
+  if (
+    !id ||
+    !readerId ||
+    !word ||
+    !articleTitle ||
+    !articleContent ||
+    !createdAt ||
+    !Number.isFinite(pronunciationScore)
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    readerId,
+    word,
+    articleTitle,
+    articleContent,
+    articleDifficulty,
+    meanings: normalizeMeanings(value.meanings),
+    pronunciationScore,
+    incorrectWords: normalizeStringList(value.incorrectWords),
+    createdAt,
+  };
+}
+
+function normalizeHistoryRecords(value: unknown): HistoryRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map(normalizeHistoryRecord)
+    .filter((record): record is HistoryRecord => record !== null);
+}
+
+function getCreatedAtMs(record: HistoryRecord): number {
+  const timestamp = Date.parse(record.createdAt);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function mergeRecords(...recordLists: HistoryRecord[][]): HistoryRecord[] {
+  const byId = new Map<string, HistoryRecord>();
+
+  for (const records of recordLists) {
+    for (const record of records) {
+      const existing = byId.get(record.id);
+
+      if (!existing || getCreatedAtMs(record) >= getCreatedAtMs(existing)) {
+        byId.set(record.id, record);
+      }
+    }
+  }
+
+  return Array.from(byId.values()).sort(
+    (left, right) => getCreatedAtMs(right) - getCreatedAtMs(left)
+  );
+}
+
+function extractApiError(data: unknown): string | null {
+  if (!isRecord(data) || typeof data.error !== "string") {
+    return null;
+  }
+
+  const message = data.error.trim();
+  return message || null;
+}
+
+async function readResponseBody(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return null;
+  }
 }
 
 export const useHistoryStore = create<HistoryState>()(
@@ -24,83 +170,95 @@ export const useHistoryStore = create<HistoryState>()(
       records: [],
       loading: false,
       error: null,
+      hydrated: false,
+      setHydrated: (hydrated) => set({ hydrated }),
+      getRecordById: (id) => {
+        if (!id) {
+          return null;
+        }
+
+        return get().records.find((record) => record.id === id) ?? null;
+      },
 
       loadRecords: async () => {
         set({ loading: true, error: null });
         try {
-          const res = await fetch("/api/history");
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          const serverRecords: HistoryRecord[] = data.records || [];
-          // Merge with local records (dedup by id) so optimistically-saved
-          // records are not lost if the POST hasn't completed yet
-          const localRecords = get().records;
-          const merged = new Map<string, HistoryRecord>();
-          for (const r of serverRecords) merged.set(r.id, r);
-          for (const r of localRecords) {
-            if (!merged.has(r.id)) merged.set(r.id, r);
+          const response = await fetch("/api/history");
+          const data = await readResponseBody(response);
+
+          if (!response.ok) {
+            throw new Error(extractApiError(data) ?? `HTTP ${response.status}`);
           }
-          const sorted = Array.from(merged.values()).sort(
-            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+
+          const serverRecords = normalizeHistoryRecords(
+            isRecord(data) ? data.records : []
           );
+          const sorted = mergeRecords(serverRecords, get().records);
+
           set({ records: sorted, loading: false });
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          console.error("[History] Load failed:", message);
-          // Keep existing local records on error
-          set({ error: "加载历史记录失败", loading: false });
+          const message = err instanceof Error ? err.message : "Unknown error";
+          console.error("[HistoryStore] loadRecords failed:", message);
+          set({ error: HISTORY_LOAD_ERROR, loading: false });
         }
       },
 
       addRecord: async (record) => {
-        // Optimistic update
         const prev = get().records;
-        set({ records: [record, ...prev], error: null });
+        const optimisticRecords = mergeRecords([record], prev);
+        set({ records: optimisticRecords, error: null });
 
         try {
-          const res = await fetch("/api/history", {
+          const response = await fetch("/api/history", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(record),
           });
-          if (!res.ok) {
-            // Rollback on failure
-            set({ records: prev });
-            throw new Error(`HTTP ${res.status}`);
+          const data = await readResponseBody(response);
+
+          if (!response.ok) {
+            throw new Error(extractApiError(data) ?? `HTTP ${response.status}`);
           }
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          console.error("[History] Add failed:", message);
-          // Verify rollback is still needed (check first item)
-          if (get().records[0]?.id === record.id) {
-            set({ records: prev });
-          }
-          set({ error: "保存记录失败" });
+          const message = err instanceof Error ? err.message : "Unknown error";
+          console.error("[HistoryStore] addRecord failed:", {
+            id: record.id,
+            error: message,
+          });
+          set((state) => ({
+            records: mergeRecords(
+              prev,
+              state.records.filter((item) => item.id !== record.id)
+            ),
+            error: HISTORY_SAVE_ERROR,
+          }));
         }
       },
 
       removeRecord: async (id) => {
         const prev = get().records;
-        set({ records: prev.filter((r) => r.id !== id), error: null });
+        set({ records: prev.filter((record) => record.id !== id), error: null });
 
         try {
-          const res = await fetch(`/api/history/${encodeURIComponent(id)}`, {
+          const response = await fetch(`/api/history/${encodeURIComponent(id)}`, {
             method: "DELETE",
           });
-          if (!res.ok) {
-            set({ records: prev });
-            throw new Error(`HTTP ${res.status}`);
+          const data = await readResponseBody(response);
+
+          if (!response.ok) {
+            throw new Error(extractApiError(data) ?? `HTTP ${response.status}`);
           }
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          console.error("[History] Remove failed:", message);
-          if (get().records.every((r) => r.id !== id) && prev.some((r) => r.id === id)) {
-            set({ records: prev });
-          }
-          set({ error: "删除记录失败" });
+          const message = err instanceof Error ? err.message : "Unknown error";
+          console.error("[HistoryStore] removeRecord failed:", { id, error: message });
+          set((state) => ({
+            records:
+              state.records.every((record) => record.id !== id) &&
+              prev.some((record) => record.id === id)
+                ? mergeRecords(prev, state.records)
+                : state.records,
+            error: HISTORY_REMOVE_ERROR,
+          }));
         }
       },
 
@@ -109,26 +267,29 @@ export const useHistoryStore = create<HistoryState>()(
         set({ records: [], error: null });
 
         try {
-          const res = await fetch("/api/history", { method: "DELETE" });
-          if (!res.ok) {
-            set({ records: prev });
-            throw new Error(`HTTP ${res.status}`);
+          const response = await fetch("/api/history", { method: "DELETE" });
+          const data = await readResponseBody(response);
+
+          if (!response.ok) {
+            throw new Error(extractApiError(data) ?? `HTTP ${response.status}`);
           }
         } catch (err) {
-          const message =
-            err instanceof Error ? err.message : "Unknown error";
-          console.error("[History] Clear failed:", message);
-          if (get().records.length === 0 && prev.length > 0) {
-            set({ records: prev });
-          }
-          set({ error: "清空记录失败" });
+          const message = err instanceof Error ? err.message : "Unknown error";
+          console.error("[HistoryStore] clearRecords failed:", message);
+          set((state) => ({
+            records:
+              state.records.length === 0 && prev.length > 0
+                ? mergeRecords(prev, state.records)
+                : state.records,
+            error: HISTORY_CLEAR_ERROR,
+          }));
         }
       },
     }),
     {
       name: "eng-reader-history",
-      // Only persist records to localStorage as a cache; server is the source of truth
       partialize: (state) => ({ records: state.records }),
+      onRehydrateStorage: () => (state) => state?.setHydrated(true),
     }
   )
 );

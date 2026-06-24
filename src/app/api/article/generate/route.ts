@@ -1,69 +1,190 @@
+import {
+  apiError,
+  apiSuccess,
+  createApiContext,
+  isNonEmptyString,
+  isRecord,
+  logApiEvent,
+  summarizeError,
+  truncateText,
+} from "@/app/api/_utils/response";
 import type { Article } from "@/types";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com/v1/chat/completions";
+const VALID_LEVELS = ["beginner", "intermediate", "advanced"] as const;
+const DEFAULT_LEVEL: Article["difficulty"] = "intermediate";
+const MAX_WORD_LENGTH = 64;
 
-const SYSTEM_PROMPT = `你是一个英语教学专家。根据用户提供的单词和英语等级，生成一篇英文文章。
+const SYSTEM_PROMPT = `
+你是一名英语学习内容助手。请根据用户提供的英文单词和难度等级，生成一篇英语学习文章。
 
 要求：
-1. 文章自然流畅，该单词在文章中至少出现 3-5 次，每次体现不同语义
-2. 用 **{word}** 标记目标单词的每次出现
-3. 根据等级调整词汇量和句式复杂度：
-   - beginner：高中词汇、简单句、80-120词
-   - intermediate：四级词汇、复合句、150-200词
-   - advanced：六级+词汇、复杂句式、200-300词
-4. 文章末尾附上该单词在文中出现的各语义解释（中文）
+1. 文章自然流畅，目标单词至少出现 3-5 次，并体现不同词义或不同语境。
+2. 目标单词每次出现时，都必须使用 **word** 这种 Markdown 粗体形式标记。
+3. 根据难度控制词汇量和句式复杂度：
+   - beginner: 高中词汇与简单句，80-120 词
+   - intermediate: 四六级词汇与复合句，150-200 词
+   - advanced: 更复杂的词汇和句式，200-300 词
+4. meanings 数组需要列出文章里使用到的不同词义，每项包含中文释义、词性和文中原句。
 
-返回严格的 JSON 格式，不要包含 markdown 代码块标记：
+请严格返回 JSON，不要返回 Markdown 代码块：
 {
   "title": "文章标题",
-  "content": "markdown 格式，目标词用 **加粗**",
+  "content": "markdown 格式正文，目标词用 **粗体** 标记",
   "meanings": [
-    { "meaning": "中文解释", "partOfSpeech": "词性", "example": "文中原句" }
+    { "meaning": "中文释义", "partOfSpeech": "词性", "example": "文中原句" }
   ],
   "difficulty": "beginner | intermediate | advanced",
   "wordCount": 150
-}`;
+}
+`.trim();
 
-function buildUserPrompt(word: string, level: string): string {
-  const levelDescriptions: Record<string, string> = {
-    beginner: "初级（请使用高中词汇、简单句，文章 80-120 词）",
-    intermediate: "中级（请使用四级词汇、复合句，文章 150-200 词）",
-    advanced: "高级（请使用六级+词汇、复杂句式，文章 200-300 词）",
+function normalizeLevel(value: unknown): Article["difficulty"] {
+  return VALID_LEVELS.includes(value as Article["difficulty"])
+    ? (value as Article["difficulty"])
+    : DEFAULT_LEVEL;
+}
+
+function normalizeWord(value: unknown): string | null {
+  if (!isNonEmptyString(value)) {
+    return null;
+  }
+
+  const word = value.trim();
+
+  if (word.length > MAX_WORD_LENGTH) {
+    return null;
+  }
+
+  return word;
+}
+
+function buildUserPrompt(word: string, level: Article["difficulty"]): string {
+  const levelDescriptions: Record<Article["difficulty"], string> = {
+    beginner: "初级：高中词汇、简单句，80-120 词",
+    intermediate: "中级：四六级词汇、复合句，150-200 词",
+    advanced: "高级：更复杂的词汇和句式，200-300 词",
   };
-  const levelDesc = levelDescriptions[level] || levelDescriptions.intermediate;
-  return `请为单词 "${word}" 生成一篇多语义英语学习文章。难度等级：${levelDesc}。`;
+
+  return `请围绕单词 "${word}" 生成一篇英语学习文章。难度：${levelDescriptions[level]}。`;
+}
+
+function countWords(content: string): number {
+  return content.split(/\s+/).filter(Boolean).length;
+}
+
+function normalizeMeanings(value: unknown): Article["meanings"] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter(isRecord)
+    .map((item) => ({
+      meaning: typeof item.meaning === "string" ? item.meaning.trim() : "",
+      partOfSpeech:
+        typeof item.partOfSpeech === "string" ? item.partOfSpeech.trim() : "",
+      example: typeof item.example === "string" ? item.example.trim() : "",
+    }))
+    .filter((item) => item.meaning && item.partOfSpeech && item.example);
+}
+
+function normalizeArticle(
+  value: unknown,
+  fallbackDifficulty: Article["difficulty"]
+): Article | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const title = typeof value.title === "string" ? value.title.trim() : "";
+  const content = typeof value.content === "string" ? value.content.trim() : "";
+  const meanings = normalizeMeanings(value.meanings);
+  const difficulty = normalizeLevel(value.difficulty);
+  const wordCount =
+    typeof value.wordCount === "number" && Number.isFinite(value.wordCount)
+      ? Math.max(1, Math.round(value.wordCount))
+      : countWords(content);
+
+  if (!title || !content || meanings.length === 0) {
+    return null;
+  }
+
+  return {
+    title,
+    content,
+    meanings,
+    difficulty: difficulty || fallbackDifficulty,
+    wordCount,
+  };
+}
+
+function extractUpstreamContent(value: unknown): string | null {
+  if (!isRecord(value) || !Array.isArray(value.choices)) {
+    return null;
+  }
+
+  const firstChoice = value.choices[0];
+
+  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) {
+    return null;
+  }
+
+  return typeof firstChoice.message.content === "string"
+    ? firstChoice.message.content
+    : null;
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
+  const context = createApiContext(request);
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
 
   if (!apiKey) {
-    return Response.json(
-      { error: "DEEPSEEK_API_KEY 未配置，请在 .env.local 中设置" },
-      { status: 500 }
-    );
+    logApiEvent(context, "error", "DeepSeek API key is missing");
+
+    return apiError(context, {
+      status: 500,
+      code: "ARTICLE_MISCONFIGURED",
+      message: "文章生成服务未配置，请检查 DEEPSEEK_API_KEY。",
+    });
   }
 
-  let word: string;
-  let level: string;
+  let body: unknown;
 
   try {
-    const body = await request.json();
-    word = (body.word || "").trim();
-    level = body.level || "intermediate";
-  } catch {
-    return Response.json({ error: "请求格式错误" }, { status: 400 });
+    body = await request.json();
+  } catch (err) {
+    logApiEvent(context, "warn", "Article request payload is not valid JSON", {
+      error: summarizeError(err),
+    });
+
+    return apiError(context, {
+      status: 400,
+      code: "INVALID_JSON",
+      message: "请求体必须是合法的 JSON。",
+    });
   }
 
+  if (!isRecord(body)) {
+    return apiError(context, {
+      status: 400,
+      code: "INVALID_REQUEST_BODY",
+      message: "请求体必须是对象结构。",
+    });
+  }
+
+  const word = normalizeWord(body.word);
   if (!word) {
-    return Response.json({ error: "请提供单词" }, { status: 400 });
+    logApiEvent(context, "warn", "Article request missing valid word");
+
+    return apiError(context, {
+      status: 400,
+      code: "INVALID_WORD",
+      message: "请提供 1 到 64 个字符的目标单词。",
+    });
   }
 
-  // Validate level
-  const validLevels = ["beginner", "intermediate", "advanced"];
-  if (!validLevels.includes(level)) {
-    level = "intermediate";
-  }
+  const level = normalizeLevel(body.level);
 
   try {
     const response = await fetch(DEEPSEEK_ENDPOINT, {
@@ -86,61 +207,89 @@ export async function POST(request: Request) {
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "Unknown error");
-      console.error(`[DeepSeek API] ${response.status}: ${errorText}`);
-      return Response.json(
-        { error: `AI 服务返回错误 (${response.status})，请稍后重试` },
-        { status: 502 }
-      );
+      const errorText = truncateText(await response.text().catch(() => ""));
+      logApiEvent(context, "error", "DeepSeek request failed", {
+        status: response.status,
+        body: errorText || undefined,
+      });
+
+      return apiError(context, {
+        status: 502,
+        code: "ARTICLE_UPSTREAM_ERROR",
+        message: `文章生成服务返回错误 (${response.status})，请稍后重试。`,
+      });
     }
 
-    const data = await response.json();
-    const content = data.choices?.[0]?.message?.content;
-
+    const data = (await response.json()) as unknown;
+    const content = extractUpstreamContent(data);
     if (!content) {
-      console.error("[DeepSeek API] Empty response content", data);
-      return Response.json(
-        { error: "AI 返回了空内容，请重试" },
-        { status: 502 }
-      );
+      logApiEvent(context, "error", "DeepSeek response missing content");
+
+      return apiError(context, {
+        status: 502,
+        code: "ARTICLE_EMPTY_RESPONSE",
+        message: "文章生成服务返回了空内容，请稍后重试。",
+      });
     }
 
-    // Parse the JSON from the content
-    let article: Article;
+    let parsedContent: unknown;
+
     try {
-      article = JSON.parse(content.trim()) as Article;
-    } catch {
-      console.error("[DeepSeek API] Failed to parse JSON:", content.slice(0, 200));
-      return Response.json(
-        { error: "AI 返回格式异常，请重试" },
-        { status: 502 }
-      );
+      parsedContent = JSON.parse(content.trim()) as unknown;
+    } catch (err) {
+      logApiEvent(context, "error", "DeepSeek returned invalid JSON", {
+        error: summarizeError(err),
+        preview: truncateText(content, 200),
+      });
+
+      return apiError(context, {
+        status: 502,
+        code: "ARTICLE_INVALID_RESPONSE",
+        message: "文章生成服务返回格式异常，请稍后重试。",
+      });
     }
 
-    // Validate required fields
-    if (!article.title || !article.content || !Array.isArray(article.meanings)) {
-      return Response.json(
-        { error: "AI 返回数据不完整，请重试" },
-        { status: 502 }
-      );
+    const article = normalizeArticle(parsedContent, level);
+
+    if (!article) {
+      logApiEvent(context, "error", "DeepSeek response failed validation", {
+        preview: truncateText(content, 200),
+      });
+
+      return apiError(context, {
+        status: 502,
+        code: "ARTICLE_INVALID_SHAPE",
+        message: "文章生成服务返回数据不完整，请稍后重试。",
+      });
     }
 
-    // Ensure wordCount and difficulty are set
-    article.difficulty = article.difficulty || (level as Article["difficulty"]);
-    article.wordCount = article.wordCount || article.content.split(/\s+/).length;
+    logApiEvent(context, "info", "Generated article", {
+      word,
+      difficulty: article.difficulty,
+      wordCount: article.wordCount,
+      meanings: article.meanings.length,
+    });
 
-    return Response.json(article);
+    return apiSuccess(context, article);
   } catch (err) {
     if (err instanceof DOMException && err.name === "TimeoutError") {
-      return Response.json(
-        { error: "AI 服务请求超时（30s），请稍后重试" },
-        { status: 504 }
-      );
+      logApiEvent(context, "error", "DeepSeek request timed out");
+
+      return apiError(context, {
+        status: 504,
+        code: "ARTICLE_TIMEOUT",
+        message: "文章生成服务超时，请稍后重试。",
+      });
     }
-    console.error("[DeepSeek API] Unexpected error:", err);
-    return Response.json(
-      { error: "服务异常，请稍后重试" },
-      { status: 500 }
-    );
+
+    logApiEvent(context, "error", "Unexpected article generation error", {
+      error: summarizeError(err),
+    });
+
+    return apiError(context, {
+      status: 500,
+      code: "ARTICLE_INTERNAL_ERROR",
+      message: "文章生成服务异常，请稍后重试。",
+    });
   }
 }

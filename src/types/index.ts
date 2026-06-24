@@ -36,6 +36,7 @@ export interface HistoryRecord {
   word: string;
   articleTitle: string;
   articleContent: string;
+  articleDifficulty?: Difficulty;
   meanings: WordMeaning[];
   pronunciationScore: number;
   incorrectWords: string[];

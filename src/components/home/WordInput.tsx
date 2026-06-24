@@ -1,9 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type KeyboardEvent } from "react";
 import { useRouter } from "next/navigation";
+import { PencilLine, Sparkles, X } from "lucide-react";
 import { useUserStore } from "@/stores/useUserStore";
-import { PencilLine, ArrowRight, Sparkles } from "lucide-react";
+
+const LEVEL_LABELS = {
+  beginner: "初级",
+  intermediate: "中级",
+  advanced: "高级",
+} as const;
 
 export function WordInput() {
   const router = useRouter();
@@ -14,88 +20,107 @@ export function WordInput() {
   const handleSubmit = () => {
     const trimmed = word.trim();
     if (!trimmed) return;
+
     router.push(
       `/reader/direct/word?word=${encodeURIComponent(trimmed)}&level=${profile.level}`
     );
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") handleSubmit();
+  const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") handleSubmit();
   };
 
   return (
-    <div className="terminal-card p-6">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="w-8 h-8 rounded-lg bg-cta/10 flex items-center justify-center">
-          <PencilLine className="w-4 h-4 text-cta" />
+    <section className="terminal-card p-6">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="mb-2 flex items-center gap-2">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-cta/10">
+              <PencilLine className="h-4 w-4 text-cta" />
+            </div>
+            <h2
+              className="text-xl font-semibold"
+              style={{ fontFamily: "var(--font-heading)" }}
+            >
+              输入目标单词
+            </h2>
+          </div>
+          <p className="text-sm text-text-muted">
+            围绕单词快速生成一篇可练习的英文短文，并直接进入阅读与跟读流程。
+          </p>
         </div>
-        <h2
-          className="text-xl font-semibold"
-          style={{ fontFamily: "var(--font-heading)" }}
-        >
-          直接输入单词
-        </h2>
+        <div className="rounded-md border border-[rgba(0,255,65,0.12)] bg-primary/6 px-3 py-2 text-right">
+          <div className="text-[10px] uppercase tracking-[0.24em] text-text-light">
+            Current Level
+          </div>
+          <div className="mt-1 text-sm font-semibold text-primary">
+            {LEVEL_LABELS[profile.level]}
+          </div>
+        </div>
       </div>
 
-      <p className="text-sm text-text-muted mb-4">
-        输入一个你想学习的英语单词，AI 将生成一篇包含该单词多种语义的文章
-      </p>
+      <label htmlFor="target-word" className="mb-2 block text-sm text-text-muted">
+        输入一个英文单词，按 Enter 或点击右侧按钮开始。
+      </label>
 
-      {/* Input Row */}
-      <div
-        className={`flex items-stretch gap-0 transition-all duration-200 ${
-          focused ? "scale-[1.01]" : ""
-        }`}
-      >
-        <div className="flex-1 relative">
+      <div className="flex flex-col items-stretch gap-3 sm:flex-row">
+        <div className="relative flex-1">
           <input
+            id="target-word"
             type="text"
             value={word}
-            onChange={(e) => setWord(e.target.value)}
+            onChange={(event) => setWord(event.target.value)}
             onKeyDown={handleKeyDown}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
-            placeholder="输入单词，如 bank、spring、run..."
-            className="terminal-inset w-full h-full px-4 py-3 text-text rounded-l-2xl outline-none focus:ring-2 focus:ring-cta/40 transition-all duration-200 text-[15px]"
+            placeholder="例如 bank, spring, run, light"
+            className={`terminal-inset w-full px-4 py-3 pr-24 text-[15px] text-text outline-none transition-all duration-200 ${
+              focused ? "ring-2 ring-cta/40" : ""
+            }`}
           />
           {word.trim() && (
-            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-text-light">
-              {profile.level === "beginner"
-                ? "初级"
-                : profile.level === "intermediate"
-                  ? "中级"
-                  : "高级"}
-            </span>
+            <div className="absolute inset-y-0 right-3 flex items-center gap-2">
+              <span className="text-xs text-text-light">
+                {LEVEL_LABELS[profile.level]}
+              </span>
+              <button
+                type="button"
+                onClick={() => setWord("")}
+                aria-label="清空输入"
+                className="flex h-7 w-7 items-center justify-center rounded-md text-text-light transition-colors hover:bg-surface hover:text-text"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           )}
         </div>
         <button
           onClick={handleSubmit}
           disabled={!word.trim()}
-          className="terminal-btn flex items-center gap-2 px-5 py-3 bg-cta/15 text-cta rounded-l-none disabled:opacity-50 disabled:cursor-not-allowed"
+          className="terminal-btn flex min-h-12 items-center justify-center gap-2 bg-cta/15 px-5 py-3 text-cta disabled:opacity-50 sm:min-w-40"
         >
-          <Sparkles className="w-4 h-4" />
-          <span className="font-medium whitespace-nowrap">生成文章</span>
+          <Sparkles className="h-4 w-4" />
+          <span className="whitespace-nowrap font-medium">生成练习文章</span>
         </button>
       </div>
 
-      {/* Quick Suggestions */}
-      <div className="flex items-center gap-2 mt-3 flex-wrap">
-        <span className="text-xs text-text-light">试试：</span>
-        {["bank", "spring", "run", "set", "light"].map((w) => (
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-text-light">试试这些高频多义词：</span>
+        {["bank", "spring", "run", "set", "light"].map((suggestion) => (
           <button
-            key={w}
+            key={suggestion}
             onClick={() => {
-              setWord(w);
+              setWord(suggestion);
               router.push(
-                `/reader/direct/word?word=${encodeURIComponent(w)}&level=${profile.level}`
+                `/reader/direct/word?word=${encodeURIComponent(suggestion)}&level=${profile.level}`
               );
             }}
-            className="text-xs px-2.5 py-1 rounded-lg bg-surface-alt text-text-muted hover:bg-primary/10 hover:text-primary transition-colors duration-150"
+            className="rounded-md bg-surface-alt px-2.5 py-1 text-xs text-text-muted transition-colors duration-150 hover:bg-primary/10 hover:text-primary"
           >
-            {w}
+            {suggestion}
           </button>
         ))}
       </div>
-    </div>
+    </section>
   );
 }

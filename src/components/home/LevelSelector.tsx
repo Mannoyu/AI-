@@ -1,8 +1,8 @@
 "use client";
 
+import { BookOpen, Brain, GraduationCap } from "lucide-react";
 import { useUserStore } from "@/stores/useUserStore";
 import type { Difficulty } from "@/types";
-import { GraduationCap, BookOpen, Brain } from "lucide-react";
 
 const LEVELS: {
   key: Difficulty;
@@ -15,68 +15,89 @@ const LEVELS: {
     key: "beginner",
     label: "初级",
     icon: BookOpen,
-    desc: "高中词汇 · 简单句 · 80-120 词文章",
+    desc: "适合基础巩固，词汇和句式更直接，文章长度更短。",
     color: "text-success",
   },
   {
     key: "intermediate",
     label: "中级",
     icon: GraduationCap,
-    desc: "四级词汇 · 复合句 · 150-200 词文章",
+    desc: "适合日常训练，兼顾常用词汇、复合句和语义理解。",
     color: "text-primary",
   },
   {
     key: "advanced",
     label: "高级",
     icon: Brain,
-    desc: "六级+词汇 · 复杂句式 · 200-300 词文章",
+    desc: "适合进阶阅读，句式更复杂，文章更接近真实材料。",
     color: "text-cta",
   },
 ];
 
 export function LevelSelector({
   compact = false,
+  framed = true,
 }: {
   compact?: boolean;
+  framed?: boolean;
 }) {
   const { profile, setLevel } = useUserStore();
 
   return (
-    <div className={compact ? "" : "terminal-card p-6"}>
+    <div className={framed ? "terminal-card p-6" : ""}>
       {!compact && (
-        <h2
-          className="text-xl font-semibold mb-4"
-          style={{ fontFamily: "var(--font-heading)" }}
-        >
-          选择你的英语等级
-        </h2>
+        <div className="mb-4">
+          <h2
+            className="text-xl font-semibold"
+            style={{ fontFamily: "var(--font-heading)" }}
+          >
+            选择阅读难度
+          </h2>
+          <p className="mt-1 text-sm text-text-muted">
+            这个等级会影响生成文章的长度、词汇密度和解释方式。
+          </p>
+        </div>
       )}
-      <div className={`grid gap-3 ${compact ? "grid-cols-3" : "grid-cols-1 sm:grid-cols-3"}`}>
-        {LEVELS.map((lvl) => {
-          const isActive = profile.level === lvl.key;
-          const Icon = lvl.icon;
+      <div
+        className={`grid gap-3 ${
+          compact ? "grid-cols-3" : "grid-cols-1 sm:grid-cols-3"
+        }`}
+      >
+        {LEVELS.map((level) => {
+          const isActive = profile.level === level.key;
+          const Icon = level.icon;
 
           return (
             <button
-              key={lvl.key}
-              onClick={() => setLevel(lvl.key)}
-              className={`terminal-card terminal-card-hover p-4 text-left transition-all duration-200 ${
+              key={level.key}
+              onClick={() => setLevel(level.key)}
+              aria-pressed={isActive}
+              className={`terminal-card terminal-card-hover min-h-32 p-4 text-left transition-all duration-200 ${
                 isActive
-                  ? "ring-2 ring-primary ring-offset-2"
+                  ? "bg-primary/6 ring-2 ring-primary ring-offset-2"
                   : "hover:shadow-terminal-hover"
               }`}
             >
-              <div className="flex items-center gap-2 mb-1.5">
-                <Icon className={`w-5 h-5 ${lvl.color}`} />
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Icon className={`h-5 w-5 ${level.color}`} />
+                  <span
+                    className="text-sm font-semibold"
+                    style={{ fontFamily: "var(--font-heading)" }}
+                  >
+                    {level.label}
+                  </span>
+                </div>
                 <span
-                  className="font-semibold text-sm"
-                  style={{ fontFamily: "var(--font-heading)" }}
+                  className={`text-[10px] uppercase tracking-[0.2em] ${
+                    isActive ? "text-primary" : "text-text-light"
+                  }`}
                 >
-                  {lvl.label}
+                  {isActive ? "Selected" : "Option"}
                 </span>
               </div>
-              <p className="text-xs text-text-muted leading-relaxed">
-                {lvl.desc}
+              <p className="text-xs leading-relaxed text-text-muted">
+                {level.desc}
               </p>
             </button>
           );

@@ -1,8 +1,9 @@
 "use client";
 
-import type { FeedbackToken } from "@/types";
+import { Fragment } from "react";
+import { CheckCircle2, Star, XCircle } from "lucide-react";
 import { WordToken } from "@/components/reader/WordToken";
-import { CheckCircle2, XCircle, Star } from "lucide-react";
+import type { FeedbackToken } from "@/types";
 
 interface WordFeedbackProps {
   tokens: FeedbackToken[];
@@ -12,65 +13,64 @@ interface WordFeedbackProps {
 export function WordFeedback({ tokens, targetWord }: WordFeedbackProps) {
   if (!tokens.length) return null;
 
-  const correctCount = tokens.filter((t) => t.status === "correct").length;
-  const incorrectCount = tokens.filter((t) => t.status === "incorrect").length;
-  const total = correctCount + incorrectCount;
+  const correctCount = tokens.filter((token) => token.status === "correct").length;
+  const targetCount = tokens.filter((token) => token.status === "target").length;
+  const incorrectCount = tokens.filter(
+    (token) => token.status === "incorrect"
+  ).length;
+  const total = correctCount + targetCount + incorrectCount;
+  const accuracy =
+    total > 0 ? Math.round(((correctCount + targetCount) / total) * 100) : 0;
 
   return (
-    <div className="terminal-card p-5">
+    <div className="terminal-inset rounded-2xl p-5">
       <h3
-        className="text-base font-semibold mb-3 flex items-center gap-2"
+        className="mb-3 flex items-center gap-2 text-base font-semibold text-text"
         style={{ fontFamily: "var(--font-heading)" }}
       >
         逐词反馈
       </h3>
 
-      {/* Legend */}
-      <div className="flex items-center gap-4 mb-4 text-xs">
+      <div className="mb-4 flex flex-wrap items-center gap-4 text-xs text-text-muted">
         <span className="flex items-center gap-1">
-          <CheckCircle2 className="w-3.5 h-3.5 text-success" />
-          正确 ({correctCount})
+          <CheckCircle2 className="h-3.5 w-3.5 text-success" />
+          正确 ({correctCount + targetCount})
         </span>
         <span className="flex items-center gap-1">
-          <XCircle className="w-3.5 h-3.5 text-error" />
-          需改进 ({incorrectCount})
+          <XCircle className="h-3.5 w-3.5 text-error" />
+          待改进 ({incorrectCount})
         </span>
         <span className="flex items-center gap-1">
-          <Star className="w-3.5 h-3.5 text-gold" />
+          <Star className="h-3.5 w-3.5 text-gold" />
           目标词
         </span>
       </div>
 
-      {/* Token Display */}
-      <div className="terminal-inset rounded-xl p-4 leading-[2]">
-        {tokens.map((token, i) => (
-          <WordToken
-            key={i}
-            word={token.word}
-            isTarget={
-              token.word.toLowerCase().replace(/[^a-z'-]/g, "") ===
-              targetWord.toLowerCase()
-            }
-            feedbackStatus={token.status}
-          />
-        ))}
-        {tokens.map((_, i) => (
-          <span key={`space-${i}`}> </span>
+      <div className="rounded-xl border border-[rgba(0,255,65,0.08)] bg-surface/60 p-4 leading-[2]">
+        {tokens.map((token, index) => (
+          <Fragment key={`${token.originalIndex}-${index}-${token.word}`}>
+            <WordToken
+              word={token.word}
+              isTarget={
+                token.word.toLowerCase().replace(/[^a-z'-]/g, "") ===
+                targetWord.toLowerCase()
+              }
+              feedbackStatus={token.status}
+            />
+            {index < tokens.length - 1 ? " " : null}
+          </Fragment>
         ))}
       </div>
 
-      {/* Progress Bar */}
       <div className="mt-4">
-        <div className="flex justify-between text-xs text-text-muted mb-1">
+        <div className="mb-1 flex justify-between text-xs text-text-muted">
           <span>准确率</span>
-          <span>{total > 0 ? Math.round((correctCount / total) * 100) : 0}%</span>
+          <span>{accuracy}%</span>
         </div>
-        <div className="h-2 rounded-full bg-surface-alt overflow-hidden">
+        <div className="h-2 overflow-hidden rounded-full bg-surface-alt">
           <div
             className="h-full rounded-full bg-success transition-all duration-500"
-            style={{
-              width: `${total > 0 ? Math.round((correctCount / total) * 100) : 0}%`,
-            }}
+            style={{ width: `${accuracy}%` }}
           />
         </div>
       </div>

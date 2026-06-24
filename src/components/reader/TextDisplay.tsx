@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useMemo, useRef } from "react";
 import { WordToken } from "./WordToken";
 import type { FeedbackToken } from "@/types";
 
@@ -10,36 +11,26 @@ interface TextDisplayProps {
   targetWord?: string;
   feedbackTokens?: FeedbackToken[];
   className?: string;
-  /** Index of the currently spoken sentence (for TTS highlight). */
   highlightSentenceIndex?: number | null;
 }
 
-/**
- * Split text into sentences, preserving delimiters and whitespace.
- * Handles `.` `!` `?` as sentence boundaries.
- */
+function splitParagraphs(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, "\n");
+  const parts = normalized
+    .split(/\n\s*\n+/)
+    .map((part) => part.replace(/\n+/g, " ").trim())
+    .filter(Boolean);
+
+  return parts.length > 0 ? parts : [normalized.replace(/\n+/g, " ").trim()];
+}
+
 function splitSentences(text: string): string[] {
-  const parts: string[] = [];
-  // Match: sentence content up to and including the terminator + any following whitespace
-  const regex = /([^.!?\n]+[.!?]+[\s]*|[\n]+|[^.!?\n]+$)/g;
-  let match: RegExpExecArray | null;
-  let lastIndex = 0;
-
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      // There's text between matches — add it as a separate part
-      parts.push(text.slice(lastIndex, match.index));
-    }
-    parts.push(match[0]);
-    lastIndex = regex.lastIndex;
+  const matches = text.match(/[^.!?\n]+[.!?]+[\s]*|[^.!?\n]+$/g);
+  if (!matches || matches.length === 0) {
+    return text.trim() ? [text.trim()] : [];
   }
 
-  // Remaining text after the last match
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-
-  return parts.length > 0 ? parts : [text];
+  return matches.map((sentence) => sentence.trim()).filter(Boolean);
 }
 
 export function TextDisplay({
@@ -51,59 +42,97 @@ export function TextDisplay({
   className = "",
   highlightSentenceIndex,
 }: TextDisplayProps) {
-  const sentences = splitSentences(text);
+  const highlightRefs = useRef<Array<HTMLSpanElement | null>>([]);
+  const paragraphs = useMemo(() => {
+    return splitParagraphs(text).map((paragraph, index) => ({
+      id: `${index}-${paragraph.slice(0, 24)}`,
+      sentences: splitSentences(paragraph),
+    }));
+  }, [text]);
 
-  const getFeedbackStatus = (
-    word: string
-  ): FeedbackToken["status"] | undefined => {
-    if (!feedbackTokens?.length) return undefined;
-    const clean = word.replace(/[^a-zA-Z'-]/g, "");
-    const found = feedbackTokens.find(
-      (t) => t.word.toLowerCase() === clean.toLowerCase()
+  const feedbackLookup = useMemo(() => {
+    if (!feedbackTokens?.length) {
+      return new Map<string, FeedbackToken["status"]>();
+    }
+
+    return new Map(
+      feedbackTokens.map((token) => [
+        token.word.replace(/[^a-zA-Z'-]/g, "").toLowerCase(),
+        token.status,
+      ])
     );
-    return found?.status;
-  };
+  }, [feedbackTokens]);
 
-  const renderWords = (sentence: string, sentenceIdx: number) => {
-    const words = sentence.split(/(\s+)/);
-    const isHighlighted =
-      highlightSentenceIndex != null && sentenceIdx === highlightSentenceIndex;
+  useEffect(() => {
+    if (highlightSentenceIndex == null) {
+      return;
+    }
 
-    return (
-      <span
-        key={sentenceIdx}
-        className={`${
-          isHighlighted
-            ? "bg-primary/10 border-l-2 border-primary pl-2 rounded-r-md"
-            : ""
-        } transition-all duration-300`}
-      >
-        {words.map((token, i) => {
-          if (token.trim() === "") {
-            return <span key={i}>{token}</span>;
-          }
+    const target = highlightRefs.current[highlightSentenceIndex];
+    if (!target) {
+      return;
+    }
 
-          const clean = token.replace(/[^a-zA-Z'-]/g, "").toLowerCase();
-          const isTarget = targetWord?.toLowerCase() === clean;
+    target.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
+      inline: "nearest",
+    });
+  }, [highlightSentenceIndex]);
 
-          return (
-            <WordToken
-              key={i}
-              word={token}
-              isTarget={isTarget}
-              isSelected={selectedWord?.toLowerCase() === clean}
-              onClick={onWordClick}
-              feedbackStatus={getFeedbackStatus(token)}
-            />
-          );
-        })}
-      </span>
-    );
-  };
+  let runningSentenceIndex = 0;
 
   return (
-    <div className={`leading-relaxed ${className}`}>
-      {sentences.map((sentence, idx) => renderWords(sentence, idx))}
+    <div className={`space-y-4 ${className}`}>
+      {paragraphs.map((paragraph) => (
+        <p key={paragraph.id} className="text-balance">
+          {paragraph.sentences.map((sentence, sentenceIdx) => {
+            const absoluteSentenceIndex = runningSentenceIndex++;
+            const isHighlighted =
+              highlightSentenceIndex != null &&
+              absoluteSentenceIndex === highlightSentenceIndex;
+
+            return (
+              <span
+                key={`${paragraph.id}-${sentenceIdx}`}
+                ref={(element) => {
+                  highlightRefs.current[absoluteSentenceIndex] = element;
+                }}
+                className={`${
+                  isHighlighted
+                    ? "rounded-r-md border-l-2 border-primary bg-primary/10 pl-2"
+                    : ""
+                } transition-all duration-300`}
+              >
+                {sentence.split(/(\s+)/).map((token, tokenIdx) => {
+                  if (token.trim() === "") {
+                    return (
+                      <span key={`${paragraph.id}-${sentenceIdx}-space-${tokenIdx}`}>
+                        {token}
+                      </span>
+                    );
+                  }
+
+                  const clean = token.replace(/[^a-zA-Z'-]/g, "").toLowerCase();
+                  const isTarget = targetWord?.toLowerCase() === clean;
+
+                  return (
+                    <WordToken
+                      key={`${paragraph.id}-${sentenceIdx}-${tokenIdx}-${token}`}
+                      word={token}
+                      isTarget={isTarget}
+                      isSelected={selectedWord?.toLowerCase() === clean}
+                      onClick={onWordClick}
+                      feedbackStatus={feedbackLookup.get(clean)}
+                    />
+                  );
+                })}
+                {sentenceIdx < paragraph.sentences.length - 1 ? " " : null}
+              </span>
+            );
+          })}
+        </p>
+      ))}
     </div>
   );
 }
